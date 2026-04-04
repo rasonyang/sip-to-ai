@@ -1,6 +1,16 @@
 # SIP-to-AI
 
-⭐ **Star to follow updates & roadmap**
+Why this project exists
+
+Most voice agent frameworks:
+- require WebRTC
+- rely on heavy dependencies (C / ffmpeg)
+- are not telephony-native
+
+This project:
+- pure Python SIP + RTP (no C deps)
+- direct bridge to realtime AI
+- built for call center / telephony scenarios
 
 **SIP-to-AI** — stream RTP audio from **FreeSWITCH / OpenSIPS / Asterisk** directly to **end-to-end realtime voice models**:
 - ✅ **OpenAI Realtime API** (gpt-realtime GA)

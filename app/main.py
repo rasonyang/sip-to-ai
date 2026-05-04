@@ -13,6 +13,7 @@ from pathlib import Path
 from app.ai.deepgram_agent import DeepgramAgentClient
 from app.ai.duplex_base import AiDuplexClient
 from app.ai.gemini_live import GeminiLiveClient
+from app.ai.grok_voice import GrokVoiceClient
 from app.ai.openai_realtime import OpenAIRealtimeClient
 from app.bridge import AudioAdapter, CallSession
 from app.config import config
@@ -198,6 +199,30 @@ def create_ai_client() -> AiDuplexClient:
             voice=config.ai.gemini_voice,
             instructions=instructions,
             greeting=greeting
+        )
+
+    elif vendor == "grok":
+        if not config.ai.grok_api_key:
+            raise ValueError("Grok API key not configured")
+
+        instructions, greeting = _load_agent_config(logger)
+
+        logger.info(
+            "Using Grok Voice client",
+            model=config.ai.grok_model,
+            voice=config.ai.grok_voice,
+            has_greeting=greeting is not None,
+            instructions_length=len(instructions),
+            greeting_preview=greeting[:50] if greeting else None,
+        )
+
+        return GrokVoiceClient(
+            api_key=config.ai.grok_api_key,
+            model=config.ai.grok_model,
+            voice=config.ai.grok_voice,
+            instructions=instructions,
+            greeting=greeting,
+            ws_endpoint=config.ai.grok_ws_endpoint,
         )
 
     else:

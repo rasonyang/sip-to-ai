@@ -91,7 +91,7 @@ class AIConfig:
     No client-side configuration needed.
     """
 
-    vendor: Literal["openai", "deepgram", "gemini"] = "openai"
+    vendor: Literal["openai", "deepgram", "gemini", "grok"] = "openai"
 
     # Agent Prompt Configuration (shared across vendors)
     # NOTE: Path can be relative (resolved from project root) or absolute
@@ -112,6 +112,12 @@ class AIConfig:
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"  # Model with Live API support
     gemini_voice: str = "Puck"  # Voice: Puck, Charon, Kore, Fenrir, Aoede
+
+    # xAI Grok Voice Configuration
+    grok_api_key: str = ""
+    grok_ws_endpoint: str = "wss://api.x.ai/v1/realtime"
+    grok_model: str = "grok-voice-think-fast-1.0"
+    grok_voice: str = "eve"  # Built-in voices: eve (default), ara, leo, rex, sal
 
 
 @dataclass(frozen=True)
@@ -151,7 +157,7 @@ class Config:
         )
 
         ai_vendor = os.getenv("AI_VENDOR", "mock").lower()
-        if ai_vendor not in ["mock", "openai", "deepgram", "gemini"]:
+        if ai_vendor not in ["mock", "openai", "deepgram", "gemini", "grok"]:
             ai_vendor = "mock"
 
         self.ai = AIConfig(
@@ -167,6 +173,10 @@ class Config:
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
             gemini_voice=os.getenv("GEMINI_VOICE", "Puck"),
+            grok_api_key=os.getenv("XAI_API_KEY", ""),
+            grok_ws_endpoint=os.getenv("GROK_WS_ENDPOINT", "wss://api.x.ai/v1/realtime"),
+            grok_model=os.getenv("GROK_MODEL", "grok-voice-think-fast-1.0"),
+            grok_voice=os.getenv("GROK_VOICE", "eve"),
         )
 
         self.sip = SIPConfig(

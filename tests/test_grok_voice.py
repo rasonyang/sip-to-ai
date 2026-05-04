@@ -235,3 +235,63 @@ class TestGrokMessageProcessing:
 
         assert client._event_queue.empty()
         assert client._audio_queue.empty()
+
+
+class TestGrokSessionConfig:
+    """Tests for _configure_session and _send_greeting."""
+
+    @pytest.mark.asyncio
+    async def test_configure_session_payload(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(
+            api_key="k",
+            model="grok-voice-think-fast-1.0",
+            voice="eve",
+            instructions="be terse",
+        )
+        ws = _FakeWebSocket()
+        client._ws = ws  # type: ignore[assignment]
+
+        await client._configure_session()
+
+        assert len(ws.sent) == 1
+        msg = json.loads(ws.sent[0])
+        assert msg["type"] == "session.update"
+        sess = msg["session"]
+        assert sess["model"] == "grok-voice-think-fast-1.0"
+        assert sess["voice"] == "eve"
+        assert sess["system_prompt"] == "be terse"
+        assert sess["audio_format"]["input"]["type"] == "mulaw"
+        assert sess["audio_format"]["input"]["sample_rate"] == 8000
+        assert sess["audio_format"]["output"]["type"] == "mulaw"
+        assert sess["audio_format"]["output"]["sample_rate"] == 8000
+        assert sess["turn_detection"]["type"] == "server_vad"
+
+    @pytest.mark.asyncio
+    async def test_send_greeting_sends_response_create(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k", greeting="hi there")
+        ws = _FakeWebSocket()
+        client._ws = ws  # type: ignore[assignment]
+
+        await client._send_greeting()
+
+        assert len(ws.sent) == 1
+        msg = json.loads(ws.sent[0])
+        assert msg["type"] == "response.create"
+        assert msg["response"]["instructions"] == "hi there"
+        assert msg["response"]["metadata"]["response_purpose"] == "greeting"
+
+    @pytest.mark.asyncio
+    async def test_send_greeting_noop_when_unset(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k", greeting=None)
+        ws = _FakeWebSocket()
+        client._ws = ws  # type: ignore[assignment]
+
+        await client._send_greeting()
+
+        assert ws.sent == []

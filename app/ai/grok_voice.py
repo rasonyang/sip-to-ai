@@ -195,3 +195,53 @@ class GrokVoiceClient(AiDuplexBase):
 
         else:
             self._logger.debug("Unhandled Grok event", msg_type=msg_type, data=data)
+
+    async def _configure_session(self) -> None:
+        """Send the initial session.update payload.
+
+        Schema note: the audio_format field shape used here ({"input": {"type": "mulaw",
+        "sample_rate": 8000}, "output": {...}}) follows the doc summary. If the live
+        API rejects this shape, the design intent (mu-law @ 8kHz both directions,
+        server VAD) is what matters — adjust the key path to match the API error.
+        """
+        if not self._ws:
+            return
+
+        config = {
+            "type": "session.update",
+            "session": {
+                "model": self._model,
+                "voice": self._voice,
+                "system_prompt": self._instructions,
+                "audio_format": {
+                    "input": {"type": "mulaw", "sample_rate": 8000},
+                    "output": {"type": "mulaw", "sample_rate": 8000},
+                },
+                "turn_detection": {"type": "server_vad"},
+            },
+        }
+        self._logger.info(
+            "Configuring Grok session",
+            model=self._model,
+            voice=self._voice,
+            has_greeting=self._greeting is not None,
+            instructions_length=len(self._instructions),
+        )
+        await self._ws.send(json.dumps(config))
+
+    async def _send_greeting(self) -> None:
+        """Send greeting response.create after session.updated."""
+        if not self._ws or not self._greeting:
+            return
+
+        message = {
+            "type": "response.create",
+            "response": {
+                "instructions": self._greeting,
+                "conversation": "none",
+                "output_modalities": ["audio"],
+                "metadata": {"response_purpose": "greeting"},
+            },
+        }
+        await self._ws.send(json.dumps(message))
+        self._logger.info("Greeting request sent", greeting_preview=self._greeting[:50])

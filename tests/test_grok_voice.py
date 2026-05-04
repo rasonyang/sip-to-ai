@@ -312,6 +312,9 @@ class TestGrokSessionConfig:
         assert msg["type"] == "response.create"
         assert msg["response"]["instructions"] == "hi there"
         assert msg["response"]["metadata"]["response_purpose"] == "greeting"
+        # xAI requires a non-empty client_event_id in metadata
+        client_event_id = msg["response"]["metadata"]["client_event_id"]
+        assert isinstance(client_event_id, str) and len(client_event_id) > 0
 
     @pytest.mark.asyncio
     async def test_send_greeting_noop_when_unset(self) -> None:

@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import time
+import uuid
 from typing import AsyncIterator, Dict, Optional
 
 import structlog
@@ -243,13 +244,20 @@ class GrokVoiceClient(AiDuplexBase):
         if not self._ws or not self._greeting:
             return
 
+        # xAI's RealtimeClientEvent schema requires metadata.client_event_id on
+        # response.create. Without it the server returns "invalid_event" and the
+        # greeting never plays. uuid4 is sufficient — the value just needs to be
+        # unique per request for client-side correlation.
         message = {
             "type": "response.create",
             "response": {
                 "instructions": self._greeting,
                 "conversation": "none",
                 "output_modalities": ["audio"],
-                "metadata": {"response_purpose": "greeting"},
+                "metadata": {
+                    "client_event_id": str(uuid.uuid4()),
+                    "response_purpose": "greeting",
+                },
             },
         }
         await self._ws.send(json.dumps(message))

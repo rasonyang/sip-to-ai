@@ -17,11 +17,11 @@ import base64
 import json
 import os
 import time
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import AsyncIterator, Dict, Optional
 
 import structlog
 import websockets
-from websockets.client import WebSocketClientProtocol  # type: ignore[attr-defined]
+from websockets.client import WebSocketClientProtocol
 
 from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
 from app.utils.codec import Codec
@@ -64,7 +64,7 @@ class GrokVoiceClient(AiDuplexBase):
         self._voice = voice
         self._instructions = instructions
         self._greeting = greeting
-        self._ws: Optional[Any] = None
+        self._ws: Optional[WebSocketClientProtocol] = None
         self._ws_url = ws_endpoint
 
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)

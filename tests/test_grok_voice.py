@@ -1,5 +1,8 @@
 """Unit tests for GrokVoiceClient and Grok config wiring."""
 
+import asyncio
+import base64
+import json
 import os
 from unittest.mock import patch
 
@@ -75,3 +78,64 @@ class TestGrokConstructor:
         assert client._ws_url == "wss://api.x.ai/v1/realtime"
         assert client._sample_rate == 8000
         assert client._frame_ms == 20
+
+
+class _FakeWebSocket:
+    """Minimal stand-in for websockets.WebSocketClientProtocol used in tests."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.closed = False
+
+    async def send(self, message: str) -> None:
+        if self.closed:
+            raise ConnectionError("closed")
+        self.sent.append(message)
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def recv(self) -> str:  # pragma: no cover - overridden per test as needed
+        await asyncio.Event().wait()
+        return ""
+
+
+class TestGrokUplink:
+    """Tests for send_pcm16_8k."""
+
+    @pytest.mark.asyncio
+    async def test_send_pcm16_8k_sends_input_audio_buffer_append(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        ws = _FakeWebSocket()
+        client._ws = ws  # type: ignore[assignment]
+        client._connected = True
+
+        # 320 bytes of PCM16 silence = 160 mu-law bytes
+        await client.send_pcm16_8k(b"\x00" * 320)
+
+        assert len(ws.sent) == 1
+        msg = json.loads(ws.sent[0])
+        assert msg["type"] == "input_audio_buffer.append"
+        decoded = base64.b64decode(msg["audio"])
+        assert len(decoded) == 160  # mu-law @ 8kHz, 20ms = 160 bytes
+
+    @pytest.mark.asyncio
+    async def test_send_pcm16_8k_validates_frame_size(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        client._ws = _FakeWebSocket()  # type: ignore[assignment]
+        client._connected = True
+
+        with pytest.raises(ValueError, match="320"):
+            await client.send_pcm16_8k(b"\x00" * 100)
+
+    @pytest.mark.asyncio
+    async def test_send_pcm16_8k_raises_when_not_connected(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        with pytest.raises(ConnectionError):
+            await client.send_pcm16_8k(b"\x00" * 320)

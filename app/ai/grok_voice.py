@@ -80,3 +80,29 @@ class GrokVoiceClient(AiDuplexBase):
         self._audio_chunks_received = 0
 
         self._logger = structlog.get_logger(__name__)
+
+    async def send_pcm16_8k(self, frame_20ms: bytes) -> None:
+        """Send PCM16 @ 8kHz audio frame to Grok.
+
+        Converts PCM16 -> G.711 mu-law @ 8kHz before sending.
+
+        Args:
+            frame_20ms: PCM16 audio frame @ 8kHz (320 bytes).
+        """
+        if not self._connected or not self._ws:
+            raise ConnectionError("Not connected")
+
+        if len(frame_20ms) != 320:
+            raise ValueError(f"Expected 320 bytes PCM16 @ 8kHz, got {len(frame_20ms)}")
+
+        g711_ulaw = Codec.pcm16_to_ulaw(frame_20ms)
+
+        message = {
+            "type": "input_audio_buffer.append",
+            "audio": base64.b64encode(g711_ulaw).decode("utf-8"),
+        }
+        await self._ws.send(json.dumps(message))
+
+        self._audio_frames_sent += 1
+        if self._audio_frames_sent % 50 == 0:
+            self._logger.info("📤 Sent audio frames to Grok", frames=self._audio_frames_sent)

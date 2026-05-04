@@ -112,15 +112,24 @@ class GrokVoiceClient(AiDuplexBase):
         msg_type = data.get("type")
         self._logger.debug("Received Grok event", msg_type=msg_type)
 
-        if msg_type == "session.created":
+        if msg_type in ("session.created", "conversation.created"):
+            # xAI's live realtime API emits "conversation.created" as the
+            # connection-ready signal. The doc summary listed "session.created"
+            # too, but the live server only sends "conversation.created" in
+            # current versions. Accept either as the ready signal so we tolerate
+            # future protocol updates without a code change.
             self._session_created_event.set()
             await self._event_queue.put(
                 AiEvent(
                     type=AiEventType.CONNECTED,
-                    data=data.get("session"),
+                    data=data.get("session") or data.get("conversation"),
                     timestamp=time.time(),
                 )
             )
+
+        elif msg_type == "ping":
+            # Application-level keepalive from xAI server; no response needed.
+            self._logger.debug("Grok ping")
 
         elif msg_type == "session.updated":
             self._session_updated_event.set()

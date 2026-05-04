@@ -159,6 +159,33 @@ class TestGrokMessageProcessing:
         assert evt.type == AiEventType.CONNECTED
 
     @pytest.mark.asyncio
+    async def test_conversation_created_sets_event_and_emits_connected(self) -> None:
+        # The live xAI realtime API uses conversation.created as the connection-ready
+        # signal, not session.created. Verified against api.x.ai 2026-05-04.
+        from app.ai.grok_voice import GrokVoiceClient
+        from app.ai.duplex_base import AiEventType
+
+        client = GrokVoiceClient(api_key="k")
+        await client._process_message({"type": "conversation.created", "conversation": {"id": "c1"}})
+
+        assert client._session_created_event.is_set()
+        evt = client._event_queue.get_nowait()
+        assert evt.type == AiEventType.CONNECTED
+
+    @pytest.mark.asyncio
+    async def test_ping_is_handled_quietly(self) -> None:
+        # xAI server emits application-level "ping" as keepalive; no response needed.
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        await client._process_message({"type": "ping"})
+
+        # No event queued, no audio queued, no exception raised.
+        assert client._event_queue.empty()
+        assert client._audio_queue.empty()
+        assert not client._session_created_event.is_set()
+
+    @pytest.mark.asyncio
     async def test_session_updated_sets_event_and_emits(self) -> None:
         from app.ai.grok_voice import GrokVoiceClient
         from app.ai.duplex_base import AiEventType
@@ -452,9 +479,11 @@ class TestGrokFactory:
         assert client._greeting == "hi"
 
     def test_create_ai_client_grok_missing_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        env = {"AI_VENDOR": "grok"}
-        # Ensure XAI_API_KEY absent
-        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        # Force XAI_API_KEY to empty string. Using delenv alone is not robust because
+        # config.py calls load_dotenv() at module load time, which would re-inject
+        # XAI_API_KEY from a real .env file. Setting an empty string in os.environ
+        # overrides the .env file value (load_dotenv doesn't replace existing env vars).
+        env = {"AI_VENDOR": "grok", "XAI_API_KEY": ""}
         with patch.dict(os.environ, env, clear=False):
             from importlib import reload
             from app import config as cfg_module

@@ -1544,4 +1544,21 @@ No gaps found. No fixes needed.
 
 ---
 
+## Post-Execution Corrections (2026-05-04 smoke test)
+
+Tasks 1–10 landed as planned. Task 11 (manual smoke test against the live xAI API) revealed that several details derived from my pre-implementation doc summary diverged from the actual `https://docs.x.ai/voice-realtime.ws.json` schema. Three follow-up commits on the feature branch corrected the live-API contract before merge to `main`. The plan steps above reflect what was originally specified — code on `main` is the authoritative current state.
+
+| Aspect | Plan said | Live API actually requires | Fix commit |
+|---|---|---|---|
+| Connection-ready event | `session.created` | `conversation.created` (we now tolerate either) | `b577549` |
+| `response.create` payload | `metadata: {response_purpose}` | adds required `metadata.client_event_id` (uuid4) | `92e487d` |
+| Session audio config path | `session.audio_format.{input,output}.{type, sample_rate}` with type `mulaw` | OpenAI-style `session.audio.{input,output}.format.{type, rate}` with type `audio/pcmu` | `721488b` |
+| System prompt field | `session.system_prompt` | `session.instructions` (without this fix the agent_prompt.yaml was silently ignored) | `721488b` |
+| Default output rate | implicit 8000 | server default is **24000** — explicit `rate: 8000` is required | `721488b` |
+| `ping` server keepalive | not in plan | added explicit no-op handler | `b577549` |
+
+If you are reading this plan to follow it task-by-task in a fresh implementation, apply the corrections above directly when writing `_configure_session` and `_send_greeting` (Task 5) and `_process_message` (Task 4) — don't reproduce the original wrong values just to "fix them later".
+
+---
+
 ## Done.

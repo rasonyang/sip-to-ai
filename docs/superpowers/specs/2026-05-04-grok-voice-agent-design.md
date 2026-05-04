@@ -10,7 +10,7 @@ Add a new AI vendor `grok` to the SIP-to-AI bridge so incoming SIP calls can be 
 
 ## Background
 
-xAI's Grok Voice realtime API (`wss://api.x.ai/v1/realtime`) exposes a duplex audio WebSocket whose protocol mirrors OpenAI Realtime almost 1:1: the same event names (`session.update`, `session.created`, `input_audio_buffer.append`, `input_audio_buffer.speech_started`, `response.output_audio.delta`, `response.done`, `error`), the same handshake (`session.created` → `session.update` → `session.updated`), and native G.711 μ-law @ 8kHz support — meaning no resampling between SIP and the AI service.
+xAI's Grok Voice realtime API (`wss://api.x.ai/v1/realtime`) exposes a duplex audio WebSocket whose protocol mirrors OpenAI Realtime almost 1:1: shared event names (`session.update`, `input_audio_buffer.append`, `input_audio_buffer.speech_started`, `response.output_audio.delta`, `response.done`, `error`), an OpenAI-style session config schema (`session.audio.{input,output}.format.{type,rate}` with `audio/pcmu` for G.711 μ-law), and native G.711 μ-law @ 8kHz support — meaning no resampling between SIP and the AI service. The one notable protocol difference: xAI emits `conversation.created` (not `session.created`) as the connection-ready signal, plus periodic application-level `ping` keepalives.
 
 The existing project already has a clean per-vendor pattern: each AI is a single file under `app/ai/` implementing `AiDuplexClient`, registered through a factory in `app/main.py` and configured via env vars in `app/config.py`. Grok fits this pattern directly.
 
@@ -29,7 +29,7 @@ The existing project already has a clean per-vendor pattern: each AI is a single
 ### File Layout
 
 **New file:**
-- `app/ai/grok_voice.py` — `GrokVoiceClient(AiDuplexBase)`. WebSocket client patterned line-for-line on `app/ai/openai_realtime.py`. ~400 LOC. WebSocket URL `wss://api.x.ai/v1/realtime?model=<model>`. G.711 μ-law @ 8kHz both directions. Three async tasks (uplink send via `send_pcm16_8k`, message handler, downlink chunk drain via `receive_chunks`). Same handshake: `connect → wait session.created → send session.update → wait session.updated → optional greeting`.
+- `app/ai/grok_voice.py` — `GrokVoiceClient(AiDuplexBase)`. WebSocket client patterned line-for-line on `app/ai/openai_realtime.py`. ~410 LOC. WebSocket URL `wss://api.x.ai/v1/realtime?model=<model>`. G.711 μ-law @ 8kHz both directions. Three async tasks (uplink send via `send_pcm16_8k`, message handler, downlink chunk drain via `receive_chunks`). Handshake: `connect → wait conversation.created → send session.update → wait session.updated → optional greeting`. (Tolerates `session.created` in addition to `conversation.created` so a future protocol shift won't require a code change.)
 
 **Modified files:**
 - `app/config.py` — extend `AIConfig.vendor` Literal to include `"grok"`; add fields `grok_api_key`, `grok_model`, `grok_voice`, `grok_ws_endpoint`. Update the allowed-vendor list in `Config.__init__`. Read env vars `XAI_API_KEY`, `GROK_MODEL`, `GROK_VOICE`, `GROK_WS_ENDPOINT`.
@@ -63,8 +63,10 @@ No resampling — same as OpenAI/Deepgram. PCM16 320B/20ms ↔ G.711 μ-law 160B
 
 | Grok event (server → client) | Action in `_process_message` | Emitted `AiEventType` |
 |---|---|---|
-| `session.created` | set `_session_created_event` | `CONNECTED` |
+| `conversation.created` | set `_session_created_event` (connection-ready signal) | `CONNECTED` |
+| `session.created` | set `_session_created_event` (tolerated for forward-compat) | `CONNECTED` |
 | `session.updated` | set `_session_updated_event` | `SESSION_UPDATED` |
+| `ping` | application-level keepalive — debug log only | — |
 | `input_audio_buffer.speech_started` | barge-in signal | `TRANSCRIPT_PARTIAL` (data: `speech_started`) |
 | `input_audio_buffer.speech_stopped` | — | `TRANSCRIPT_PARTIAL` (data: `speech_stopped`) |
 | `conversation.item.input_audio_transcription.completed` | user transcript | `TRANSCRIPT_FINAL` |
@@ -77,7 +79,7 @@ No resampling — same as OpenAI/Deepgram. PCM16 320B/20ms ↔ G.711 μ-law 160B
 
 | Client → server | When sent |
 |---|---|
-| `session.update` | After `session.created` arrives, during `connect()` |
+| `session.update` | After `conversation.created` arrives, during `connect()` |
 | `input_audio_buffer.append` | Per uplink frame, base64-encoded 160B μ-law |
 | `response.create` (greeting) | After `session.updated`, only if `greeting` is configured |
 
@@ -91,17 +93,17 @@ Sent on connect:
   "session": {
     "model": "grok-voice-think-fast-1.0",
     "voice": "eve",
-    "system_prompt": "<from agent_prompt.yaml>",
-    "audio_format": {
-      "input":  {"type": "mulaw", "sample_rate": 8000},
-      "output": {"type": "mulaw", "sample_rate": 8000}
+    "instructions": "<from agent_prompt.yaml>",
+    "audio": {
+      "input":  {"format": {"type": "audio/pcmu", "rate": 8000}},
+      "output": {"format": {"type": "audio/pcmu", "rate": 8000}}
     },
     "turn_detection": {"type": "server_vad"}
   }
 }
 ```
 
-**Schema verification note:** The exact `audio_format` field shape will be verified against the live xAI API during implementation. The doc summary listed `mulaw`/`alaw` and sample rates including 8000, but the precise nesting (e.g., `input.format.type` vs `audio_format.input.type` vs OpenAI-style `audio.input.format.type: "audio/pcmu"`) needs confirmation. The design intent — "G.711 μ-law @ 8kHz both directions, server-side VAD on" — holds regardless of the exact key path.
+**Schema source:** Verified against `https://docs.x.ai/voice-realtime.ws.json` on 2026-05-04. The schema is OpenAI-style: audio config lives at `session.audio.{input,output}.format.{type,rate}` (NOT a flat `audio_format` block); type values are `audio/pcm` / `audio/pcmu` / `audio/pcma` (NOT `mulaw`); the rate field key is `rate` (NOT `sample_rate`); and the system-prompt field is named `instructions` (NOT `system_prompt`). Default output rate is 24000 Hz, so an explicit `8000` is required for telephony to avoid silent server-side fallback to PCM @ 24kHz (which would be misdecoded as μ-law @ 8kHz on the client → noise on the wire).
 
 **Greeting:** identical to OpenAI's pattern — after `session.updated`, send:
 ```json
@@ -111,7 +113,10 @@ Sent on connect:
     "instructions": "<greeting text>",
     "conversation": "none",
     "output_modalities": ["audio"],
-    "metadata": {"response_purpose": "greeting"}
+    "metadata": {
+      "client_event_id": "<uuid4 per request>",
+      "response_purpose": "greeting"
+    }
   }
 }
 ```
@@ -155,7 +160,7 @@ Reuses the patterns from `openai_realtime.py`:
 | Missing `XAI_API_KEY` at startup | `ValueError`; server fails fast — no calls accepted |
 | WebSocket connect timeout (10s) | `ConnectionError` from `connect()`; `CallSession` propagates; call ends |
 | Auth rejection (401/403) | Error logged; call ends |
-| `session.created` not received within 5s | Timeout → `ConnectionError` |
+| `conversation.created` not received within 5s (or `session.created` for forward-compat) | Timeout → `ConnectionError` |
 | `session.updated` not received within 5s | Timeout → `ConnectionError` |
 | WebSocket closed mid-call | `_message_handler` emits `DISCONNECTED`; `CallSession` health task may trigger reconnect via existing `reconnect()` (close + sleep 1s + connect) |
 | `error` event from Grok | Emit `AiEventType.ERROR` with message; logged but non-fatal — let server decide if WS survives |
@@ -171,8 +176,10 @@ Reuses the patterns from `openai_realtime.py`:
 
 `tests/test_grok_voice.py` — flat `tests/` layout matches the existing `test_codec.py`, `test_ring_buffer.py`, `test_bridge_end2end.py` pattern. No existing per-vendor tests under `tests/`, so this is the first.
 
-- **Connection lifecycle:** mock `websockets.connect` to deliver `session.created` then `session.updated`; assert `connect()` completes within timeout, both `_session_*_event` flags set, `session.update` payload was sent.
-- **Session config payload:** assert outbound `session.update` JSON contains correct `model`, `voice`, `system_prompt`, `audio_format`, `turn_detection`.
+- **Connection lifecycle:** mock `websockets.connect` to deliver `session.created` (or `conversation.created`) then `session.updated`; assert `connect()` completes within timeout, both `_session_*_event` flags set, `session.update` payload was sent.
+- **Session config payload:** assert outbound `session.update` JSON contains correct `model`, `voice`, `instructions`, `audio.{input,output}.format.{type,rate}`, `turn_detection`.
+- **`conversation.created` accepted as ready signal** (the live xAI handshake signal).
+- **`ping` keepalive is a no-op** (no event queued, no audio queued).
 - **Audio uplink:** feed 320B PCM16 frame to `send_pcm16_8k()`; assert outbound `input_audio_buffer.append` contains base64-encoded 160B μ-law payload.
 - **Audio downlink:** push fake `response.output_audio.delta` (base64 μ-law) into mock socket; assert `receive_chunks()` yields decoded 320B PCM16.
 - **Frame size validation:** wrong-size input raises `ValueError`.
@@ -201,4 +208,16 @@ No CI integration against the live xAI service — matches the project's current
 
 ## Open Questions
 
-None at design time. The one item flagged for verification during implementation is the exact `audio_format` field nesting in `session.update` — confirmed against live API on first connect, with `mulaw` @ 8kHz as the target shape regardless.
+None remaining. The schema-uncertainty flagged at design time (exact `audio_format` field shape and value) was resolved during the manual smoke test on 2026-05-04 by fetching `https://docs.x.ai/voice-realtime.ws.json`. The verified schema is documented in the **Session Configuration** section above.
+
+## Smoke-Test Findings (2026-05-04)
+
+The manual smoke test surfaced three live-API behaviors that diverged from the original doc-summary-derived design and required follow-up commits on the feature branch before merge:
+
+| Issue | Finding | Fix commit |
+|---|---|---|
+| Handshake event name | xAI emits `conversation.created` as the ready signal, not `session.created` | `b577549` |
+| `response.create` validation | xAI's `RealtimeClientEvent` schema requires `metadata.client_event_id` (uuid4 per request) | `92e487d` |
+| Session config schema | OpenAI-style: `session.audio.{input,output}.format.{type,rate}` with `audio/pcmu`; system prompt is `instructions` (not `system_prompt`); default rate is 24000 Hz | `721488b` |
+
+The final merge to `main` (commit `aa0f53b`) reflects all three corrections.

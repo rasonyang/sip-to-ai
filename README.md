@@ -179,6 +179,12 @@ sequenceDiagram
 - Resampling: 8kHz SIP ↔ 16kHz/24kHz Gemini (handled internally)
 - Settings: model, voice, system instructions
 
+**`GrokVoiceClient`** (`app/ai/grok_voice.py`)
+- WebSocket: `wss://api.x.ai/v1/realtime`
+- Audio format: `audio/pcmu` (G.711 μ-law @ 8kHz, no resampling)
+- Handshake: emits `conversation.created` as the connection-ready signal (not `session.created`)
+- Settings: model, voice, instructions; greeting via `response.create` with required `metadata.client_event_id`
+
 
 
 ## Deepgram Voice Agent Setup

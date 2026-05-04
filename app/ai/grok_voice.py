@@ -1,0 +1,82 @@
+"""xAI Grok Voice realtime API adapter.
+
+Patterned on OpenAIRealtimeClient. The Grok Voice realtime protocol mirrors
+OpenAI Realtime almost 1:1 (event names, handshake, audio buffer model), and
+natively supports G.711 mu-law @ 8kHz so no resampling is needed.
+
+Audio Flow:
+- Input:  PCM16 @ 8kHz -> G.711 mu-law @ 8kHz -> Grok
+- Output: Grok -> G.711 mu-law @ 8kHz -> PCM16 @ 8kHz
+
+Endpoint: wss://api.x.ai/v1/realtime?model=<model>
+Auth:     Authorization: Bearer <XAI_API_KEY>
+"""
+
+import asyncio
+import base64
+import json
+import os
+import time
+from typing import Any, AsyncIterator, Dict, Optional
+
+import structlog
+import websockets
+from websockets.client import WebSocketClientProtocol  # type: ignore[attr-defined]
+
+from app.ai.duplex_base import AiDuplexBase, AiEvent, AiEventType
+from app.utils.codec import Codec
+
+
+class GrokVoiceClient(AiDuplexBase):
+    """xAI Grok Voice realtime API client."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "grok-voice-think-fast-1.0",
+        voice: str = "eve",
+        instructions: str = "You are a helpful assistant.",
+        greeting: Optional[str] = None,
+        ws_endpoint: str = "wss://api.x.ai/v1/realtime",
+    ) -> None:
+        """Initialize Grok Voice client.
+
+        Args:
+            api_key: xAI API key (falls back to XAI_API_KEY env var).
+            model: Grok voice model (e.g. grok-voice-think-fast-1.0).
+            voice: Built-in voice (eve, ara, leo, rex, sal) or custom 8-char id.
+            instructions: System prompt for the agent.
+            greeting: Optional greeting played when the call connects.
+            ws_endpoint: WebSocket endpoint (overridable for testing).
+        """
+        self._sip_sample_rate = 8000
+        self._grok_sample_rate = 8000
+        self._frame_ms = 20
+        self._sample_rate = self._sip_sample_rate
+
+        super().__init__(self._sample_rate, self._frame_ms)
+
+        self._api_key = api_key or os.getenv("XAI_API_KEY")
+        if not self._api_key:
+            raise ValueError("Grok API key not provided")
+
+        self._model = model
+        self._voice = voice
+        self._instructions = instructions
+        self._greeting = greeting
+        self._ws: Optional[Any] = None
+        self._ws_url = ws_endpoint
+
+        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
+        self._event_queue: asyncio.Queue[AiEvent] = asyncio.Queue(maxsize=100)
+
+        self._connected = False
+        self._stop_event = asyncio.Event()
+        self._session_created_event = asyncio.Event()
+        self._session_updated_event = asyncio.Event()
+        self._message_handler_task: Optional[asyncio.Task[None]] = None
+
+        self._audio_frames_sent = 0
+        self._audio_chunks_received = 0
+
+        self._logger = structlog.get_logger(__name__)

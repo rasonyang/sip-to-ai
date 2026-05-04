@@ -245,3 +245,147 @@ class GrokVoiceClient(AiDuplexBase):
         }
         await self._ws.send(json.dumps(message))
         self._logger.info("Greeting request sent", greeting_preview=self._greeting[:50])
+
+    async def connect(self) -> None:
+        """Connect to Grok Voice WebSocket and complete the handshake."""
+        if self._connected:
+            return
+
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+
+            async with asyncio.timeout(10.0):
+                self._ws = await websockets.connect(
+                    f"{self._ws_url}?model={self._model}",
+                    additional_headers=headers,
+                    open_timeout=10.0,
+                )
+
+            self._connected = True
+            self._stop_event.clear()
+            self._session_created_event.clear()
+            self._session_updated_event.clear()
+
+            self._message_handler_task = asyncio.create_task(
+                self._message_handler(),
+                name="grok-message-handler",
+            )
+
+            self._logger.info("Waiting for session.created from Grok...")
+            async with asyncio.timeout(5.0):
+                await self._session_created_event.wait()
+
+            self._logger.info("Configuring Grok session...")
+            await self._configure_session()
+
+            self._logger.info("Waiting for session.updated from Grok...")
+            async with asyncio.timeout(5.0):
+                await self._session_updated_event.wait()
+
+            if self._greeting:
+                await self._send_greeting()
+
+            self._logger.info("Grok Voice connected", model=self._model, voice=self._voice)
+
+        except Exception as e:
+            self._connected = False
+            raise ConnectionError(f"Failed to connect: {e}") from e
+
+    async def close(self) -> None:
+        """Close the Grok WebSocket and cancel background tasks."""
+        if not self._connected:
+            return
+
+        self._connected = False
+        self._stop_event.set()
+        try:
+            self._audio_queue.put_nowait(b"")
+        except asyncio.QueueFull:
+            pass
+
+        if self._message_handler_task:
+            self._message_handler_task.cancel()
+            try:
+                await self._message_handler_task
+            except asyncio.CancelledError:
+                self._logger.debug("Message handler cancelled")
+
+        if self._ws:
+            await self._ws.close()
+
+        self._logger.info("Grok Voice disconnected")
+
+    async def _message_handler(self) -> None:
+        """Read frames from the WebSocket and dispatch via _process_message."""
+        if not self._ws:
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                message = await self._ws.recv()
+                data = json.loads(message)
+                await self._process_message(data)
+            except websockets.exceptions.ConnectionClosed:
+                self._logger.warning("Grok WebSocket closed")
+                self._connected = False
+                self._stop_event.set()
+                try:
+                    self._event_queue.put_nowait(
+                        AiEvent(type=AiEventType.DISCONNECTED, timestamp=time.time())
+                    )
+                except asyncio.QueueFull:
+                    pass
+                try:
+                    self._audio_queue.put_nowait(b"")
+                except asyncio.QueueFull:
+                    pass
+                break
+            except Exception as e:
+                self._logger.error("Grok message handler error", error=str(e))
+
+    async def receive_chunks(self) -> AsyncIterator[bytes]:
+        """Yield PCM16 @ 8kHz audio chunks decoded from Grok."""
+        while self._connected:
+            try:
+                chunk = await self._audio_queue.get()
+                if not self._connected and chunk == b"":
+                    break
+                yield chunk
+            except Exception as e:
+                self._logger.error("Grok audio stream error", error=str(e))
+                break
+
+    async def events(self) -> AsyncIterator[AiEvent]:
+        """Yield AI events (CONNECTED, ERROR, etc.)."""
+        while self._connected:
+            try:
+                event = await self._event_queue.get()
+                yield event
+            except Exception as e:
+                self._logger.error("Grok event stream error", error=str(e))
+                break
+
+    async def update_session(self, config: Dict) -> None:
+        """Send a session.update with the given config payload."""
+        if not self._connected or not self._ws:
+            raise ConnectionError("Not connected")
+        message = {"type": "session.update", "session": config}
+        await self._ws.send(json.dumps(message))
+        self._logger.info("Grok session updated")
+
+    async def ping(self) -> bool:
+        """Health check via WebSocket ping."""
+        if not self._connected or not self._ws:
+            return False
+        try:
+            pong_waiter = await self._ws.ping()
+            await asyncio.wait_for(pong_waiter, timeout=5.0)
+            return True
+        except (asyncio.TimeoutError, Exception):
+            return False
+
+    async def reconnect(self) -> None:
+        """Close and reconnect."""
+        await self.close()
+        await asyncio.sleep(1.0)
+        await self.connect()

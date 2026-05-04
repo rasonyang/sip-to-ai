@@ -7,6 +7,8 @@ import os
 from unittest.mock import patch
 
 import pytest
+import websockets
+import websockets.exceptions
 
 
 class TestGrokConfig:
@@ -295,3 +297,126 @@ class TestGrokSessionConfig:
         await client._send_greeting()
 
         assert ws.sent == []
+
+
+class _RecvControlledFakeWS(_FakeWebSocket):
+    """Fake WS where recv() yields scripted messages, then blocks."""
+
+    def __init__(self, messages: list[str]) -> None:
+        super().__init__()
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        for m in messages:
+            self._queue.put_nowait(m)
+        self._closed_event = asyncio.Event()
+
+    async def recv(self) -> str:
+        if not self._queue.empty():
+            return await self._queue.get()
+        # After scripted messages exhausted, block until close
+        await self._closed_event.wait()
+        raise websockets.exceptions.ConnectionClosed(None, None)  # type: ignore[arg-type]
+
+    async def close(self) -> None:
+        await super().close()
+        self._closed_event.set()
+
+
+class TestGrokLifecycle:
+    """Tests for connect/close/message-handler integration."""
+
+    @pytest.mark.asyncio
+    async def test_connect_completes_after_session_created_and_updated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.ai import grok_voice
+        from app.ai.grok_voice import GrokVoiceClient
+
+        scripted = [
+            json.dumps({"type": "session.created", "session": {"id": "s"}}),
+            json.dumps({"type": "session.updated", "session": {}}),
+        ]
+        fake_ws = _RecvControlledFakeWS(scripted)
+
+        async def fake_connect(*args: object, **kwargs: object) -> _RecvControlledFakeWS:
+            return fake_ws
+
+        monkeypatch.setattr(grok_voice.websockets, "connect", fake_connect)
+
+        client = GrokVoiceClient(api_key="k")
+        await client.connect()
+
+        assert client._connected is True
+        assert client._session_created_event.is_set()
+        assert client._session_updated_event.is_set()
+        # session.update was sent during connect
+        types = [json.loads(m)["type"] for m in fake_ws.sent]
+        assert "session.update" in types
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_sends_greeting_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.ai import grok_voice
+        from app.ai.grok_voice import GrokVoiceClient
+
+        scripted = [
+            json.dumps({"type": "session.created", "session": {}}),
+            json.dumps({"type": "session.updated", "session": {}}),
+        ]
+        fake_ws = _RecvControlledFakeWS(scripted)
+
+        async def fake_connect(*args: object, **kwargs: object) -> _RecvControlledFakeWS:
+            return fake_ws
+
+        monkeypatch.setattr(grok_voice.websockets, "connect", fake_connect)
+
+        client = GrokVoiceClient(api_key="k", greeting="welcome")
+        await client.connect()
+
+        types = [json.loads(m)["type"] for m in fake_ws.sent]
+        assert "response.create" in types
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_close_unblocks_receive_chunks(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        client._connected = True
+
+        # close() should put a sentinel and flip _connected
+        await client.close()
+        assert client._connected is False
+
+    @pytest.mark.asyncio
+    async def test_receive_chunks_yields_then_stops(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        client._connected = True
+        await client._audio_queue.put(b"\x00" * 320)
+
+        gen = client.receive_chunks()
+        first = await gen.__anext__()
+        assert first == b"\x00" * 320
+
+        # Simulate close: flip flag and push sentinel
+        client._connected = False
+        await client._audio_queue.put(b"")
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+
+    @pytest.mark.asyncio
+    async def test_events_yields_queued_event(self) -> None:
+        from app.ai.duplex_base import AiEvent, AiEventType
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        client._connected = True
+        await client._event_queue.put(AiEvent(type=AiEventType.CONNECTED))
+
+        gen = client.events()
+        evt = await gen.__anext__()
+        assert evt.type == AiEventType.CONNECTED

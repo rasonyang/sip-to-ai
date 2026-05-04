@@ -106,3 +106,92 @@ class GrokVoiceClient(AiDuplexBase):
         self._audio_frames_sent += 1
         if self._audio_frames_sent % 50 == 0:
             self._logger.info("📤 Sent audio frames to Grok", frames=self._audio_frames_sent)
+
+    async def _process_message(self, data: Dict) -> None:
+        """Dispatch a single Grok server event."""
+        msg_type = data.get("type")
+        self._logger.debug("Received Grok event", msg_type=msg_type)
+
+        if msg_type == "session.created":
+            self._session_created_event.set()
+            await self._event_queue.put(
+                AiEvent(
+                    type=AiEventType.CONNECTED,
+                    data=data.get("session"),
+                    timestamp=time.time(),
+                )
+            )
+
+        elif msg_type == "session.updated":
+            self._session_updated_event.set()
+            await self._event_queue.put(
+                AiEvent(
+                    type=AiEventType.SESSION_UPDATED,
+                    data=data.get("session", {}),
+                    timestamp=time.time(),
+                )
+            )
+
+        elif msg_type == "input_audio_buffer.speech_started":
+            await self._event_queue.put(
+                AiEvent(
+                    type=AiEventType.TRANSCRIPT_PARTIAL,
+                    data={"event": "speech_started"},
+                    timestamp=time.time(),
+                )
+            )
+
+        elif msg_type == "input_audio_buffer.speech_stopped":
+            await self._event_queue.put(
+                AiEvent(
+                    type=AiEventType.TRANSCRIPT_PARTIAL,
+                    data={"event": "speech_stopped"},
+                    timestamp=time.time(),
+                )
+            )
+
+        elif msg_type == "conversation.item.input_audio_transcription.completed":
+            transcript = data.get("transcript")
+            self._logger.info("✅ User transcript", text=transcript)
+            await self._event_queue.put(
+                AiEvent(
+                    type=AiEventType.TRANSCRIPT_FINAL,
+                    data={"text": transcript},
+                    timestamp=time.time(),
+                )
+            )
+
+        elif msg_type == "response.output_audio.delta":
+            audio_b64 = data.get("delta")
+            if audio_b64:
+                ulaw = base64.b64decode(audio_b64)
+                pcm16 = Codec.ulaw_to_pcm16(ulaw)
+                await self._audio_queue.put(pcm16)
+                self._audio_chunks_received += 1
+                if self._audio_chunks_received % 10 == 0:
+                    self._logger.info(
+                        "📢 Received audio chunks",
+                        chunks=self._audio_chunks_received,
+                        ulaw_bytes=len(ulaw),
+                        pcm16_bytes=len(pcm16),
+                    )
+
+        elif msg_type in ("response.output_audio_transcript.delta", "response.output_audio_transcript.done"):
+            self._logger.info("🤖 AI transcript", **{k: data.get(k) for k in ("delta", "transcript") if k in data})
+
+        elif msg_type == "response.done":
+            self._logger.debug("Grok response.done")
+
+        elif msg_type == "error":
+            err = data.get("error", {})
+            await self._event_queue.put(
+                AiEvent(
+                    type=AiEventType.ERROR,
+                    error=err.get("message"),
+                    timestamp=time.time(),
+                )
+            )
+            self._logger.error("Grok error", error=err)
+
+        else:
+            self._logger.debug("Unhandled Grok event", msg_type=msg_type, data=data)

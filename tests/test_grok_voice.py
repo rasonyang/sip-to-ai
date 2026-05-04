@@ -139,3 +139,99 @@ class TestGrokUplink:
         client = GrokVoiceClient(api_key="k")
         with pytest.raises(ConnectionError):
             await client.send_pcm16_8k(b"\x00" * 320)
+
+
+class TestGrokMessageProcessing:
+    """Tests for _process_message → event/audio queue dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_session_created_sets_event_and_emits_connected(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+        from app.ai.duplex_base import AiEventType
+
+        client = GrokVoiceClient(api_key="k")
+        await client._process_message({"type": "session.created", "session": {"id": "s1"}})
+
+        assert client._session_created_event.is_set()
+        evt = client._event_queue.get_nowait()
+        assert evt.type == AiEventType.CONNECTED
+
+    @pytest.mark.asyncio
+    async def test_session_updated_sets_event_and_emits(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+        from app.ai.duplex_base import AiEventType
+
+        client = GrokVoiceClient(api_key="k")
+        await client._process_message({"type": "session.updated", "session": {}})
+
+        assert client._session_updated_event.is_set()
+        evt = client._event_queue.get_nowait()
+        assert evt.type == AiEventType.SESSION_UPDATED
+
+    @pytest.mark.asyncio
+    async def test_audio_delta_decoded_to_pcm16(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        # 160 bytes mu-law silence (0x7F is ~zero in mu-law)
+        ulaw = bytes([0x7F] * 160)
+        await client._process_message({
+            "type": "response.output_audio.delta",
+            "delta": base64.b64encode(ulaw).decode("utf-8"),
+        })
+
+        chunk = client._audio_queue.get_nowait()
+        assert len(chunk) == 320  # PCM16 = 2x mu-law
+
+    @pytest.mark.asyncio
+    async def test_speech_started_emits_partial_event(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+        from app.ai.duplex_base import AiEventType
+
+        client = GrokVoiceClient(api_key="k")
+        await client._process_message({"type": "input_audio_buffer.speech_started"})
+
+        evt = client._event_queue.get_nowait()
+        assert evt.type == AiEventType.TRANSCRIPT_PARTIAL
+        assert evt.data == {"event": "speech_started"}
+
+    @pytest.mark.asyncio
+    async def test_transcription_completed_emits_final(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+        from app.ai.duplex_base import AiEventType
+
+        client = GrokVoiceClient(api_key="k")
+        await client._process_message({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "hello world",
+        })
+
+        evt = client._event_queue.get_nowait()
+        assert evt.type == AiEventType.TRANSCRIPT_FINAL
+        assert evt.data == {"text": "hello world"}
+
+    @pytest.mark.asyncio
+    async def test_error_event_emitted(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+        from app.ai.duplex_base import AiEventType
+
+        client = GrokVoiceClient(api_key="k")
+        await client._process_message({
+            "type": "error",
+            "error": {"message": "bad thing"},
+        })
+
+        evt = client._event_queue.get_nowait()
+        assert evt.type == AiEventType.ERROR
+        assert evt.error == "bad thing"
+
+    @pytest.mark.asyncio
+    async def test_unknown_event_does_not_raise(self) -> None:
+        from app.ai.grok_voice import GrokVoiceClient
+
+        client = GrokVoiceClient(api_key="k")
+        # Should be silently logged, no exception, no queue entries
+        await client._process_message({"type": "some.unknown.event"})
+
+        assert client._event_queue.empty()
+        assert client._audio_queue.empty()

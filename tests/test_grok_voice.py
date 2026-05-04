@@ -420,3 +420,47 @@ class TestGrokLifecycle:
         gen = client.events()
         evt = await gen.__anext__()
         assert evt.type == AiEventType.CONNECTED
+
+
+class TestGrokFactory:
+    """Tests for create_ai_client() vendor=grok branch."""
+
+    def test_create_ai_client_returns_grok_client(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        # Build minimal agent_prompt.yaml
+        prompt = tmp_path / "agent_prompt.yaml"
+        prompt.write_text("instructions: be helpful\ngreeting: hi\n")
+
+        env = {
+            "AI_VENDOR": "grok",
+            "XAI_API_KEY": "k",
+            "AGENT_PROMPT_FILE": str(prompt),
+        }
+        with patch.dict(os.environ, env, clear=False):
+            from importlib import reload
+            from app import config as cfg_module
+            reload(cfg_module)
+            # Re-import main so it picks up the reloaded config singleton
+            from app import main as main_module
+            reload(main_module)
+
+            client = main_module.create_ai_client()
+
+        from app.ai.grok_voice import GrokVoiceClient
+        assert isinstance(client, GrokVoiceClient)
+        assert client._model == "grok-voice-think-fast-1.0"
+        assert client._voice == "eve"
+        assert client._greeting == "hi"
+
+    def test_create_ai_client_grok_missing_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        env = {"AI_VENDOR": "grok"}
+        # Ensure XAI_API_KEY absent
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        with patch.dict(os.environ, env, clear=False):
+            from importlib import reload
+            from app import config as cfg_module
+            reload(cfg_module)
+            from app import main as main_module
+            reload(main_module)
+
+            with pytest.raises(ValueError, match="Grok API key"):
+                main_module.create_ai_client()

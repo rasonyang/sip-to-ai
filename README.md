@@ -16,8 +16,9 @@ This project:
 - ✅ **OpenAI Realtime API** (gpt-realtime GA)
 - ✅ **Deepgram Voice Agent**
 - ✅ **Gemini Live** (Gemini 2.5 Flash)
+- ✅ **xAI Grok Voice** (grok-voice-think-fast-1.0)
 
-Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI and Deepgram support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
+Simple passthrough bridge: **SIP (G.711 μ-law @ 8kHz)** ↔ **AI voice models**. OpenAI, Deepgram, and Grok support native G.711, Gemini requires PCM16 resampling (8kHz ↔ 16kHz/24kHz).
 
 ## Quick Start (OpenAI Realtime)
 
@@ -222,6 +223,27 @@ Get your API key from [Google AI Studio](https://aistudio.google.com/apikey).
 
 **Note:** Gemini Live uses PCM16 audio (16kHz input, 24kHz output), so the bridge performs resampling from/to 8kHz SIP audio. This adds minimal latency (<5ms).
 
+## Grok Voice Setup
+
+Set `AI_VENDOR=grok` in `.env`:
+
+```bash
+AI_VENDOR=grok
+XAI_API_KEY=your-key-here
+AGENT_PROMPT_FILE=agent_prompt.yaml
+GROK_MODEL=grok-voice-think-fast-1.0
+GROK_VOICE=eve
+```
+
+Available built-in voices: `eve` (default), `ara`, `leo`, `rex`, `sal`.
+
+Available models:
+- `grok-voice-think-fast-1.0` (recommended — best UX with reasoning)
+- `grok-voice-fast-1.0` (faster, cheaper)
+
+Get your API key from [xAI Console](https://console.x.ai/).
+
+**Note:** Grok Voice supports native G.711 μ-law @ 8kHz — same as OpenAI and Deepgram, so no resampling overhead. The realtime protocol mirrors OpenAI's, including server-side VAD and barge-in.
 
 ## Performance
 

@@ -290,11 +290,15 @@ class TestGrokSessionConfig:
         sess = msg["session"]
         assert sess["model"] == "grok-voice-think-fast-1.0"
         assert sess["voice"] == "eve"
-        assert sess["system_prompt"] == "be terse"
-        assert sess["audio_format"]["input"]["type"] == "mulaw"
-        assert sess["audio_format"]["input"]["sample_rate"] == 8000
-        assert sess["audio_format"]["output"]["type"] == "mulaw"
-        assert sess["audio_format"]["output"]["sample_rate"] == 8000
+        # xAI's session schema uses "instructions" (NOT "system_prompt")
+        assert sess["instructions"] == "be terse"
+        # xAI uses session.audio.{input,output}.format.{type,rate} with
+        # "audio/pcmu" for G.711 μ-law and explicit rate 8000 for telephony
+        # (default is 24000).
+        assert sess["audio"]["input"]["format"]["type"] == "audio/pcmu"
+        assert sess["audio"]["input"]["format"]["rate"] == 8000
+        assert sess["audio"]["output"]["format"]["type"] == "audio/pcmu"
+        assert sess["audio"]["output"]["format"]["rate"] == 8000
         assert sess["turn_detection"]["type"] == "server_vad"
 
     @pytest.mark.asyncio

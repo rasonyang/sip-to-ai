@@ -209,10 +209,11 @@ class GrokVoiceClient(AiDuplexBase):
     async def _configure_session(self) -> None:
         """Send the initial session.update payload.
 
-        Schema note: the audio_format field shape used here ({"input": {"type": "mulaw",
-        "sample_rate": 8000}, "output": {...}}) follows the doc summary. If the live
-        API rejects this shape, the design intent (mu-law @ 8kHz both directions,
-        server VAD) is what matters — adjust the key path to match the API error.
+        Schema verified against https://docs.x.ai/voice-realtime.ws.json on
+        2026-05-04: audio is at session.audio.{input,output}.format.{type,rate};
+        type "audio/pcmu" is G.711 μ-law; system prompt field is "instructions"
+        (NOT "system_prompt"). Default rate is 24000 — explicit 8000 is required
+        for telephony.
         """
         if not self._ws:
             return
@@ -222,10 +223,10 @@ class GrokVoiceClient(AiDuplexBase):
             "session": {
                 "model": self._model,
                 "voice": self._voice,
-                "system_prompt": self._instructions,
-                "audio_format": {
-                    "input": {"type": "mulaw", "sample_rate": 8000},
-                    "output": {"type": "mulaw", "sample_rate": 8000},
+                "instructions": self._instructions,
+                "audio": {
+                    "input": {"format": {"type": "audio/pcmu", "rate": 8000}},
+                    "output": {"format": {"type": "audio/pcmu", "rate": 8000}},
                 },
                 "turn_detection": {"type": "server_vad"},
             },
